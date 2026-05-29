@@ -6,3 +6,4 @@ google-auth-oauthlib
 qrcode
 pillow
 python-dotenv
+flask

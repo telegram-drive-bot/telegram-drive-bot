@@ -1,8 +1,9 @@
 import os
+import json
 import logging
 import tempfile
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional
 
 import qrcode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,23 +22,45 @@ from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 
-# تحميل المتغيرات البيئية
+# ==================== تحميل المتغيرات البيئية ====================
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8915424151:AAHlryLYb_32jkPSZpaooi-HYp6eqEGjs1M"
-SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE") or "/storage/emulated/0/telegram_drive_bot/service_account.json"
-MAIN_FOLDER_ID = os.getenv("MAIN_FOLDER_ID") or "1eIlbD9JQTIXSIuPjHJu87rdsb1pJBx6G"
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MAIN_FOLDER_ID = os.getenv("MAIN_FOLDER_ID")
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+
+# التأكد من وجود جميع المتغيرات الأساسية
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN غير موجود في متغيرات البيئة")
+if not MAIN_FOLDER_ID:
+    raise ValueError("❌ MAIN_FOLDER_ID غير موجود في متغيرات البيئة")
+if not SERVICE_ACCOUNT_JSON:
+    raise ValueError("❌ SERVICE_ACCOUNT_JSON غير موجود في متغيرات البيئة")
+
+# ==================== إعداد التسجيل ====================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
+# ==================== تهيئة Google Drive ====================
+try:
+    service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    drive_service = build("drive", "v3", credentials=credentials)
+    logger.info("✅ تم تهيئة Google Drive بنجاح")
+except Exception as e:
+    logger.error(f"❌ فشل تهيئة Google Drive: {e}")
+    raise
+
+# ==================== حالات المحادثة ====================
 WAITING_CUSTOMER_NAME, WAITING_UPLOAD, WAITING_FILE_SELECTION = range(3)
 
-# تهيئة Google Drive
-SCOPES = ["https://www.googleapis.com/auth/drive"]
-credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-drive_service = build("drive", "v3", credentials=credentials)
-
-# --- دوال Google Drive ---
+# ==================== دوال Google Drive ====================
 def create_folder(name: str, parent_id: str) -> Optional[str]:
     try:
         query = f"name='{name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -91,9 +114,8 @@ def delete_file(file_id: str) -> bool:
         logger.error(f"Error deleting file: {e}")
         return False
 
-# --- دالة توليد QR Code ---
+# ==================== دالة توليد QR Code ====================
 def generate_qr(data: str) -> Optional[str]:
-    """توليد صورة QR من نص وإرجاع مسار الملف المؤقت"""
     try:
         qr = qrcode.QRCode(
             version=1,
@@ -104,8 +126,6 @@ def generate_qr(data: str) -> Optional[str]:
         qr.add_data(data)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
-        
-        # حفظ الصورة في ملف مؤقت
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
         img.save(temp_file.name)
         return temp_file.name
@@ -113,7 +133,7 @@ def generate_qr(data: str) -> Optional[str]:
         logger.error(f"QR generation error: {e}")
         return None
 
-# --- دوال البوت ---
+# ==================== دوال البوت ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     context.user_data.clear()
@@ -190,7 +210,6 @@ async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_UPLOAD
 
         link = make_file_public(file_id)
-        # حفظ معرف الملف ورابطه في user_data لاستخدامه لاحقاً (آخر ملف مرفوع)
         context.user_data["last_file_id"] = file_id
         context.user_data["last_file_link"] = link
         context.user_data["last_file_name"] = file_name
@@ -220,7 +239,6 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("لا توجد ملفات.")
         return
 
-    # إنشاء أزرار اختيار لكل ملف (لإنشاء QR Code لملف معين)
     keyboard = []
     for f in files:
         keyboard.append([InlineKeyboardButton(f"📄 {f['name']}", callback_data=f"qr_file_{f['id']}")])
@@ -232,8 +250,6 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FILE_SELECTION
 
 async def create_qr_for_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: str, file_name: str = None):
-    """دالة مساعدة لإنشاء QR لملف معين"""
-    # الحصول على الرابط العام (إذا لم يكن عاماً نجعلها عامة)
     link = make_file_public(file_id)
     if not link:
         await update.callback_query.edit_message_text("فشل جعل الملف عاماً.")
@@ -244,7 +260,6 @@ async def create_qr_for_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await update.callback_query.edit_message_text("فشل إنشاء QR Code.")
         return
 
-    # إرسال صورة QR
     caption = f"📱 باركود (QR Code) للملف: {file_name or file_id}\n🔗 الرابط: {link}"
     with open(qr_path, "rb") as qr_img:
         await update.callback_query.message.reply_photo(photo=qr_img, caption=caption)
@@ -260,7 +275,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("أرسل اسم العميل الجديد:")
         return WAITING_CUSTOMER_NAME
     elif data == "help":
-        await query.edit_message_text("/start - بدء\n/cancel - إلغاء\n/list - عرض الملفات\n/link - رابط آخر ملف\n/qr - QR لآخر ملف\n/change - تغيير العميل")
+        await query.edit_message_text(
+            "/start - بدء\n/cancel - إلغاء\n/list - عرض الملفات\n/link - رابط آخر ملف\n/qr - QR لآخر ملف\n/change - تغيير العميل"
+        )
         return ConversationHandler.END
     elif data == "list_files":
         folder_id = context.user_data.get("folder_id")
@@ -307,7 +324,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_UPLOAD
     elif data.startswith("qr_file_"):
         file_id = data.split("_")[2]
-        # البحث عن اسم الملف (يمكن حفظه لكن سنستعلم من Drive)
         files = list_files_in_folder(context.user_data.get("folder_id"))
         file_name = None
         for f in files:
@@ -317,10 +333,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await create_qr_for_file(update, context, file_id, file_name)
         await query.delete_message()
         return WAITING_UPLOAD
+
     return WAITING_UPLOAD
 
 async def qr_last_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الأمر /qr لإنشاء QR لآخر ملف تم رفعه"""
     last_link = context.user_data.get("last_file_link")
     last_id = context.user_data.get("last_file_id")
     last_name = context.user_data.get("last_file_name")
@@ -346,7 +362,7 @@ async def change_customer_command(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text("أرسل اسم العميل الجديد:")
     return WAITING_CUSTOMER_NAME
 
-# --- لوحات الأزرار ---
+# ==================== لوحات الأزرار ====================
 def main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("بدء عميل جديد", callback_data="new_customer")],
@@ -364,7 +380,7 @@ def action_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# --- تشغيل البوت ---
+# ==================== تشغيل البوت ====================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -376,7 +392,10 @@ def main():
                 CallbackQueryHandler(button_callback, pattern="^(new_customer|help)$"),
             ],
             WAITING_UPLOAD: [
-                MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE, handle_upload),
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
+                    handle_upload
+                ),
                 CommandHandler("list", list_files),
                 CommandHandler("link", get_link_command),
                 CommandHandler("qr", qr_last_command),
@@ -385,10 +404,13 @@ def main():
                 CallbackQueryHandler(button_callback, pattern="^(list_files|get_link|qr_last|change_customer|cancel|back_to_menu|qr_file_.*)$"),
             ],
             WAITING_FILE_SELECTION: [
-               CallbackQueryHandler(button_callback, pattern="^(qr_file_.*|back_to_menu)$"),
+                CallbackQueryHandler(button_callback, pattern="^(qr_file_.*|back_to_menu)$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("help", lambda u,c: u.message.reply_text("استخدم /start"))],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("help", lambda u, c: u.message.reply_text("استخدم /start"))
+        ],
     )
 
     app.add_handler(conv_handler)
@@ -398,6 +420,10 @@ def main():
     app.add_handler(CommandHandler("change", change_customer_command))
 
     logger.info("البوت يعمل الآن مع ميزة QR Code...")
+
+    # تشغيل polling (يعمل على Render بدون مشاكل مع خادم الويب الصحي)
+    # ملاحظة: إذا أردت تجنب خطأ "No open ports" على Render، يمكنك إضافة خادم HTTP بسيط هنا،
+    # لكن البوت يعمل بشكل طبيعي حتى بدونه لأننا نستخدم polling فقط.
     app.run_polling()
 
 if __name__ == "__main__":

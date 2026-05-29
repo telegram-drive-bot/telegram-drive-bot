@@ -4,7 +4,9 @@ import logging
 import tempfile
 from datetime import datetime
 from typing import Optional
+from threading import Thread
 
+from flask import Flask
 import qrcode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -132,6 +134,17 @@ def generate_qr(data: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"QR generation error: {e}")
         return None
+
+# ==================== خادم Flask الصحي ====================
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
 
 # ==================== دوال البوت ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,6 +395,9 @@ def action_keyboard():
 
 # ==================== تشغيل البوت ====================
 def main():
+    # بدء خادم Flask في thread منفصل لتجنب "No open ports detected"
+    Thread(target=run_web).start()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -421,9 +437,7 @@ def main():
 
     logger.info("البوت يعمل الآن مع ميزة QR Code...")
 
-    # تشغيل polling (يعمل على Render بدون مشاكل مع خادم الويب الصحي)
-    # ملاحظة: إذا أردت تجنب خطأ "No open ports" على Render، يمكنك إضافة خادم HTTP بسيط هنا،
-    # لكن البوت يعمل بشكل طبيعي حتى بدونه لأننا نستخدم polling فقط.
+    # تشغيل البوت باستخدام polling (مستمر)
     app.run_polling()
 
 if __name__ == "__main__":
